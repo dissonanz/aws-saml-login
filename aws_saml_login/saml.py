@@ -135,7 +135,19 @@ def authenticate(url, user, password):
     response = session.get(url)
 
     # NOTE: parameters are hardcoded for Shibboleth IDP
-    data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
+    # data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
+
+    # NOTE: parameters are customized for Aligntech IDP
+    data = {
+      'SignInOtherSite':'SignInOtherSite',
+      'RelyingParty':'160c562a-8d12-e411-80c7-0050568a0d47',
+      'SignInSubmit':'Sign in',
+      'SingleSignOut':'SingleSignOut',
+      'AuthMethod':'FormsAuthentication',
+      'UserName':user,
+      'Password':password,
+    }
+
     response2 = session.post(response.url, data=data)
     saml_xml = get_saml_response(response2.text)
     if not saml_xml:
