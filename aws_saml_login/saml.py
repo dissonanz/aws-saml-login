@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 import os
 import configparser
 import requests
+import re
 
 
 AWS_CREDENTIALS_PATH = '~/.aws/credentials'
@@ -55,6 +56,9 @@ def get_form_action(html: str):
     soup = BeautifulSoup(html, "html.parser")
     return soup.find('form').get('action')
 
+def get_form_xsrf(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.find('input',{'name':'_xsrf'})['value']
 
 def get_account_name(role_arn: str, account_names: dict):
     number = role_arn.split(':')[4]
@@ -129,26 +133,42 @@ class AssumeRoleFailed(Exception):
 
 
 def authenticate(url, user, password):
-    '''Authenticate against the provided Shibboleth Identity Provider'''
+    '''Authenticate against the provided Identity Provider'''
 
     session = requests.Session()
     response = session.get(url)
 
-    # NOTE: parameters are hardcoded for Shibboleth IDP
-    # data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
+    if re.match('.*aligntech\.com', url) is not None:
+        # NOTE: parameters are customized for Aligntech IDP
+        data = {
+          'SignInOtherSite':'SignInOtherSite',
+          'RelyingParty':'160c562a-8d12-e411-80c7-0050568a0d47',
+          'SignInSubmit':'Sign in',
+          'SingleSignOut':'SingleSignOut',
+          'AuthMethod':'FormsAuthentication',
+          'UserName':user,
+          'Password':password,
+        }
+    elif re.match('.*jumpcloud\.com', url) is not None:
+        # NOTE: parameters are hardcoded for JumpCloud IDP
+        data = {
+          'context':'sso',
+          'otp':'',
+          'pathTo': '',
+          'redirectTo':'saml2/aws',
+          'email': user,
+          'password': password,
+          '_xsrf': get_form_xsrf(response.text)
+        }
+    else:
+        # NOTE: parameters are hardcoded for Shibboleth IDP
+        data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
 
-    # NOTE: parameters are customized for Aligntech IDP
-    data = {
-      'SignInOtherSite':'SignInOtherSite',
-      'RelyingParty':'160c562a-8d12-e411-80c7-0050568a0d47',
-      'SignInSubmit':'Sign in',
-      'SingleSignOut':'SingleSignOut',
-      'AuthMethod':'FormsAuthentication',
-      'UserName':user,
-      'Password':password,
-    }
+    if re.match('.*jumpcloud\.com', url) is not None:
+        response2 = session.post('https://sso.jumpcloud.com/auth', data=data)
+    else:
+        response2 = session.post(response.url, data=data)
 
-    response2 = session.post(response.url, data=data)
     saml_xml = get_saml_response(response2.text)
     if not saml_xml:
         raise AuthenticationFailed()
@@ -160,7 +180,10 @@ def authenticate(url, user, password):
 
     roles = get_roles(saml_xml)
 
-    roles = [(p_arn, r_arn, get_account_name(r_arn, account_names)) for p_arn, r_arn in roles]
+    if re.match(".*jumpcloud\.com", url) is not None:
+        roles = [(p_arn, r_arn, get_account_name(r_arn, account_names)) for r_arn, p_arn in roles]
+    else:
+        roles = [(p_arn, r_arn, get_account_name(r_arn, account_names)) for p_arn, r_arn in roles]
 
     return saml_xml, roles
 
