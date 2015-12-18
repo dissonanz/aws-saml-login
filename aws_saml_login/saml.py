@@ -137,8 +137,14 @@ def authenticate(url, user, password):
 
     session = requests.Session()
     response = session.get(url)
+    provider = ''
 
     if re.match('.*aligntech\.com', url) is not None:
+        provider = 'align'
+    if re.match('.*jumpcloud\.com', url) is not None:
+        provider = 'jumpcloud'
+
+    if provider == 'align':
         # NOTE: parameters are customized for Aligntech IDP
         data = {
           'SignInOtherSite':'SignInOtherSite',
@@ -149,7 +155,7 @@ def authenticate(url, user, password):
           'UserName':user,
           'Password':password,
         }
-    elif re.match('.*jumpcloud\.com', url) is not None:
+    elif provider == 'jumpcloud':
         # NOTE: parameters are hardcoded for JumpCloud IDP
         data = {
           'context':'sso',
@@ -164,7 +170,7 @@ def authenticate(url, user, password):
         # NOTE: parameters are hardcoded for Shibboleth IDP
         data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
 
-    if re.match('.*jumpcloud\.com', url) is not None:
+    if provider == 'jumpcloud':
         response2 = session.post('https://sso.jumpcloud.com/auth', data=data)
     else:
         response2 = session.post(response.url, data=data)
@@ -180,7 +186,7 @@ def authenticate(url, user, password):
 
     roles = get_roles(saml_xml)
 
-    if re.match(".*jumpcloud\.com", url) is not None:
+    if provider == 'jumpcloud':
         roles = [(p_arn, r_arn, get_account_name(r_arn, account_names)) for r_arn, p_arn in roles]
     else:
         roles = [(p_arn, r_arn, get_account_name(r_arn, account_names)) for p_arn, r_arn in roles]
