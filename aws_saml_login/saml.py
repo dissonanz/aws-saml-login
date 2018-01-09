@@ -141,6 +141,9 @@ def authenticate(url, user, password):
 
     if re.match('.*aligntech\.com', url) is not None:
         provider = 'align'
+        relying_party = '160c562a-8d12-e411-80c7-0050568a0d47'
+    if re.match('.*aligntech\.com.*cn-', url) is not None:
+        relying_party = '40cc7a5b-5bf2-e711-9102-0050568a2274'
     if re.match('.*jumpcloud\.com', url) is not None:
         provider = 'jumpcloud'
 
@@ -148,7 +151,7 @@ def authenticate(url, user, password):
         # NOTE: parameters are customized for Aligntech IDP
         data = {
           'SignInOtherSite':'SignInOtherSite',
-          'RelyingParty':'160c562a-8d12-e411-80c7-0050568a0d47',
+          'RelyingParty': relying_party,
           'SignInSubmit':'Sign in',
           'SingleSignOut':'SingleSignOut',
           'AuthMethod':'FormsAuthentication',
@@ -202,7 +205,14 @@ def assume_role(saml_xml, provider_arn, role_arn):
     os.environ['AWS_SECRET_ACCESS_KEY'] = 'fake123'
 
     try:
-        conn = boto.sts.connect_to_region('eu-west-1')
+
+        # Connect to a China region if the IAM provider is AWS China
+        if re.match('arn:aws-cn', provider_arn) is not None:
+            region = 'cn-north-1'
+        else:
+            region = 'eu-west-1'
+
+        conn = boto.sts.connect_to_region(region)
         response_data = conn.assume_role_with_saml(role_arn, provider_arn, saml_assertion)
     except boto.exception.BotoServerError as e:
         raise AssumeRoleFailed(e.message)
