@@ -1,5 +1,4 @@
-import boto.exception
-import boto.sts
+import boto3
 import codecs
 from xml.etree import ElementTree
 from bs4 import BeautifulSoup
@@ -10,6 +9,25 @@ import re
 
 
 AWS_CREDENTIALS_PATH = '~/.aws/credentials'
+OPENAM_SEARCH_STRING = 'XUI/#login/&'
+
+
+def get_boto3_session(key_id, secret, session_token=None, region=None, profile=None):
+    """
+    get boto3 session for giving keys
+
+    >>> get_boto3_session('keyid', 'secret', region='eu-central-1')
+    Session(region_name='eu-central-1')
+
+    >>> get_boto3_session(None, None, region='us-west-1')
+    Session(region_name='us-west-1')
+
+    """
+    return boto3.session.Session(aws_access_key_id=key_id,
+                                 aws_secret_access_key=secret,
+                                 aws_session_token=session_token,
+                                 region_name=region,
+                                 profile_name=profile)
 
 
 def write_aws_credentials(profile, key_id, secret, session_token=None):
@@ -61,6 +79,12 @@ def get_form_xsrf(html: str):
     return soup.find('input',{'name':'_xsrf'})['value']
 
 def get_account_name(role_arn: str, account_names: dict):
+    '''
+    >>> get_account_name('arn:aws:iam::123:role/Admin', {'123': 'blub'})
+    'blub'
+    >>> get_account_name('arn:aws:iam::456:role/Admin', {'123': 'blub'})
+
+    '''
     number = role_arn.split(':')[4]
     if account_names:
         return account_names.get(number)
@@ -136,6 +160,7 @@ def authenticate(url, user, password):
     '''Authenticate against the provided Identity Provider'''
 
     session = requests.Session()
+
     response = session.get(url)
     provider = ''
 
@@ -170,8 +195,51 @@ def authenticate(url, user, password):
           '_xsrf': get_form_xsrf(response.text)
         }
     else:
-        # NOTE: parameters are hardcoded for Shibboleth IDP
-        data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
+        # Check if OpenAM is the IdP
+        if OPENAM_SEARCH_STRING in response.url:
+            server_info_url = response.url[:response.url.index(OPENAM_SEARCH_STRING)] + 'json/serverinfo/*'
+            openam_url = response.url.replace(OPENAM_SEARCH_STRING, 'json/authenticate?', 1)
+
+            # Get cookie name
+            response = session.get(server_info_url)
+            cookie_name = response.json()['cookieName']
+
+            # Get login form
+            response = session.post(openam_url)
+            login_form = response.json()
+
+            # Submit authentication credentials
+            for item in login_form['callbacks']:
+                if item['type'] == 'NameCallback':
+                    item['input'][0]['value'] = user
+                if item['type'] == 'PasswordCallback':
+                    item['input'][0]['value'] = password
+
+            response2 = session.post(openam_url, json=login_form)
+
+            # Ask for second factor authentication, if necessary
+            if 'stage' in response2.json():
+                otp_form = response2.json()
+
+                otp_code = input('Submit OTP code: ')
+                for item in otp_form['callbacks']:
+                    if item['type'] == 'PasswordCallback':
+                        item['input'][0]['value'] = otp_code
+
+                response2 = session.post(openam_url, json=otp_form)
+
+            if response2.status_code != 200:
+                raise AuthenticationFailed()
+
+            # Set cookie for SAML response
+            session.cookies.set(cookie_name, response2.json()['tokenId'])
+
+            response2 = session.get(response2.json()['successUrl'])
+        else:
+
+            # NOTE: parameters are hardcoded for Shibboleth IDP
+            data = {'j_username': user, 'j_password': password, 'submit': 'Login'}
+            response2 = session.post(response.url, data=data)
 
     if provider == 'jumpcloud':
         response2 = session.post('https://sso.jumpcloud.com/auth', data=data)
@@ -200,27 +268,18 @@ def authenticate(url, user, password):
 def assume_role(saml_xml, provider_arn, role_arn):
     saml_assertion = codecs.encode(saml_xml.encode('utf-8'), 'base64').decode('ascii').replace('\n', '')
 
-    # boto NEEDS some credentials, but does not care about their actual values
-    os.environ['AWS_ACCESS_KEY_ID'] = 'fake123'
-    os.environ['AWS_SECRET_ACCESS_KEY'] = 'fake123'
-
     try:
-
         # Connect to a China region if the IAM provider is AWS China
         if re.match('arn:aws-cn', provider_arn) is not None:
             region = 'cn-north-1'
         else:
-            region = 'eu-west-1'
+            region = None
 
-        conn = boto.sts.connect_to_region(region)
-        response_data = conn.assume_role_with_saml(role_arn, provider_arn, saml_assertion)
-    except boto.exception.BotoServerError as e:
-        raise AssumeRoleFailed(e.message)
-    finally:
-        del os.environ['AWS_ACCESS_KEY_ID']
-        del os.environ['AWS_SECRET_ACCESS_KEY']
+        sts = boto3.client('sts', region_name=region)
+        response_data = sts.assume_role_with_saml(RoleArn=role_arn,
+                                                  PrincipalArn=provider_arn,
+                                                  SAMLAssertion=saml_assertion)
+    except Exception as e:
+        raise AssumeRoleFailed(str(e))
 
-    key_id = response_data.credentials.access_key
-    secret = response_data.credentials.secret_key
-    session_token = response_data.credentials.session_token
-    return key_id, secret, session_token
+    return tuple([response_data['Credentials'].get(x) for x in ('AccessKeyId', 'SecretAccessKey', 'SessionToken')])
