@@ -273,7 +273,9 @@ def assume_role(saml_xml, provider_arn, role_arn):
         if re.match('arn:aws-cn', provider_arn) is not None:
             region = 'cn-north-1'
         else:
-            region = None
+            # region = None
+            # set region can allow login to both aws china and global.
+            region = 'us-east-1'
 
         sts = boto3.client('sts', region_name=region)
         response_data = sts.assume_role_with_saml(RoleArn=role_arn,
